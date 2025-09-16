@@ -1,7 +1,9 @@
 python-dotenv
 google-generativeai
 langchain
+langchain-community
 langchain-google-genai
+langchain-chroma
 chromadb
 pypdf2
 sentence-transformers
@@ -15,3 +17,4 @@ pytesseract
 Pillow
 opencv-python-headless
 pdf2image
+pysqlite3-binary
