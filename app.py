@@ -12,6 +12,14 @@ try:
 except ImportError:
     print("pysqlite3 not found, using standard sqlite3 library.")
 
+# NEWLY ADDED: Set up proper cache directories for deployment environments
+os.environ['TRANSFORMERS_CACHE'] = '/code/.cache/huggingface'
+os.environ['HF_HOME'] = '/code/.cache/huggingface'
+os.environ['TORCH_HOME'] = '/code/.cache/torch'
+os.environ['HF_HUB_CACHE'] = '/code/.cache/huggingface'
+os.environ['SENTENCE_TRANSFORMERS_HOME'] = '/code/.cache/sentence_transformers'
+
+
 import json
 import uuid
 import time
@@ -23,13 +31,13 @@ from dotenv import load_dotenv
 import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted, GoogleAPIError
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-# MODIFIED: LangChain imports updated to use langchain_community for better compatibility
+# MODIFIED: LangChain imports updated for compatibility
 from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
+# NEWLY MODIFIED: Use the dedicated langchain-huggingface package for embeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.schema import Document
 import PyPDF2
 import io
-import base64
 from typing import List, Dict, Any
 import requests
 from bs4 import BeautifulSoup
@@ -50,15 +58,13 @@ app = Flask(__name__)
 CORS(app)
 
 # --- Configuration ---
-# ADDED: Moved model names to environment variables for easier configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-GENERATIVE_MODEL = os.getenv('GENERATIVE_MODEL', 'gemini-1.5-flash')
+GENERATIVE_MODEL = os.getenv('GENERATIVE_MODEL', 'gemini-2.5-flash')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'sentence-transformers/all-MiniLM-L6-v2')
 
 # Configure Gemini
 if not GEMINI_API_KEY:
     logging.error("GEMINI_API_KEY environment variable not set.")
-    # Exit or handle the error appropriately
 else:
     genai.configure(api_key=GEMINI_API_KEY)
 
@@ -71,102 +77,85 @@ class ChatbotWithMemoryAndRAG:
     def __init__(self):
         """Initializes the chatbot instance."""
         logging.info("Initializing Juno AI...")
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name=EMBEDDING_MODEL
-        )
+        
+        # NEWLY MODIFIED: More robust embedding model initialization
+        try:
+            cache_dir = os.environ.get('SENTENCE_TRANSFORMERS_HOME', '/code/.cache/sentence_transformers')
+            os.makedirs(cache_dir, exist_ok=True)
+            
+            logging.info(f"Initializing embeddings with model: {EMBEDDING_MODEL}")
+            self.embeddings = HuggingFaceEmbeddings(
+                model_name=EMBEDDING_MODEL,
+                cache_folder=cache_dir,
+                model_kwargs={'device': 'cpu'},
+                encode_kwargs={'normalize_embeddings': True}
+            )
+            logging.info("HuggingFace Embeddings initialized successfully.")
+        except Exception as e:
+            logging.error(f"CRITICAL: Could not initialize embeddings: {e}", exc_info=True)
+            logging.warning("Continuing without embeddings - RAG features will be disabled.")
+            self.embeddings = None
 
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,
             length_function=len
         )
-
         self.vectorstore = None
         self.chat_history = []
         self.memory = {}
         self.session_id = str(uuid.uuid4())
         self.last_rate_limit = None
         self.consecutive_rate_limits = 0
-
-        # Initialize Juno AI Prompts System
         self.prompts = juno_prompts
-
         logging.info(f"🤖 Juno AI initialized with session ID: {self.session_id}")
 
     def _retry_with_backoff(self, func, max_retries=5, base_delay=2):
         """Improved retry function with progressive backoff for rate limit handling"""
-
-        # If we recently hit rate limits, wait longer before trying
         if self.last_rate_limit and datetime.now() - self.last_rate_limit < timedelta(seconds=30):
-            additional_wait = min(self.consecutive_rate_limits * 5, 30)  # Up to 30 seconds
+            additional_wait = min(self.consecutive_rate_limits * 5, 30)
             logging.warning(f"Recent rate limits detected, waiting additional {additional_wait}s")
             time.sleep(additional_wait)
-
         for attempt in range(max_retries):
             try:
                 result = func()
-                # Reset rate limit tracking on success
                 self.consecutive_rate_limits = 0
                 self.last_rate_limit = None
                 return result
-
             except ResourceExhausted as e:
                 self.last_rate_limit = datetime.now()
                 self.consecutive_rate_limits += 1
-
                 if attempt == max_retries - 1:
                     logging.error(f"Max retries ({max_retries}) exceeded for rate limit.")
                     raise e
-
-                # Progressive backoff with jitter: 2s, 6s, 14s, 30s, 62s
-                delay = base_delay * (2 ** attempt) + random.uniform(1, 3)  # Add jitter
-                delay = min(delay, 60)  # Cap at 60 seconds
-
+                delay = base_delay * (2 ** attempt) + random.uniform(1, 3)
+                delay = min(delay, 60)
                 logging.warning(f"Rate limit hit (attempt {attempt + 1}/{max_retries}), waiting {delay:.1f}s...")
                 time.sleep(delay)
-
             except GoogleAPIError as e:
                 logging.error(f"Google API Error: {e}")
                 if "quota" in str(e).lower() or "rate" in str(e).lower():
-                    # Treat as rate limit
                     self.last_rate_limit = datetime.now()
                     self.consecutive_rate_limits += 1
-
                     if attempt == max_retries - 1:
                         raise ResourceExhausted("API quota exceeded")
-
                     delay = base_delay * (2 ** attempt) + random.uniform(1, 3)
                     delay = min(delay, 60)
                     logging.warning(f"API quota issue, waiting {delay:.1f}s...")
                     time.sleep(delay)
                 else:
                     raise e
-
             except Exception as e:
-                # For non-rate-limit errors, don't retry
                 logging.error(f"Non-retryable error: {e}", exc_info=True)
                 raise e
 
     def _fallback_response(self, user_message):
-        """Generate a fallback response when API is unavailable using Juno AI prompts"""
+        """Generate a fallback response when API is unavailable"""
         logging.warning(f"Generating fallback response for message: '{user_message[:50]}...'")
-        # Use Juno AI fallback response templates
         fallback_templates = get_fallback_responses()
-
-        # Select a template and personalize it
         template = random.choice(fallback_templates)
-        response = template.format(
-            user_message_preview=user_message[:50]
-        )
-
-        # Add to chat history so conversation continues
-        self.chat_history.append({
-            "user": user_message,
-            "bot": response,
-            "timestamp": datetime.now().isoformat(),
-            "fallback": True
-        })
-
+        response = template.format(user_message_preview=user_message[:50])
+        self.chat_history.append({"user": user_message, "bot": response, "timestamp": datetime.now().isoformat(), "fallback": True})
         return response
 
     def extract_text_from_pdf(self, pdf_content):
@@ -174,29 +163,20 @@ class ChatbotWithMemoryAndRAG:
         try:
             pdf_reader = PyPDF2.PdfReader(io.BytesIO(pdf_content))
             text = ""
-
             for i, page in enumerate(pdf_reader.pages):
                 page_text = page.extract_text()
-                # Check if extracted text is substantial
-                if page_text and len(page_text.strip()) > 10:  # Heuristic to check for actual content
+                if page_text and len(page_text.strip()) > 10:
                     text += page_text + "\n"
                 else:
-                    # Attempt OCR if text extraction is poor
                     logging.info(f"Poor text extraction on page {i+1}. Attempting OCR fallback.")
                     try:
-                        # Iterate through images on the page for OCR
                         for image_file_object in page.images:
                             img = Image.open(io.BytesIO(image_file_object.data))
-                            # ADDED: Specify language for better OCR accuracy if needed
-                            # ocr_text = pytesseract.image_to_string(img, lang='eng')
                             ocr_text = pytesseract.image_to_string(img)
                             if ocr_text:
                                 text += ocr_text + "\n"
                     except Exception as ocr_error:
-                        # OCR can fail if no images, etc. Silently pass.
                         logging.warning(f"OCR fallback failed for a page: {ocr_error}")
-                        pass
-
             return text
         except Exception as e:
             logging.error(f"Error extracting PDF: {e}", exc_info=True)
@@ -204,30 +184,18 @@ class ChatbotWithMemoryAndRAG:
 
     def process_document(self, text_content, filename="document"):
         """Process document text and create vector store"""
+        # NEWLY ADDED: Graceful handling if embeddings failed to initialize
+        if self.embeddings is None:
+            logging.error("Embeddings are not available. Cannot process document.")
+            return "Error: Document processing is disabled because the embedding model could not be loaded."
         try:
             logging.info(f"Processing document: {filename}")
-            # Split text into chunks
             chunks = self.text_splitter.split_text(text_content)
-
-            # Create documents
-            documents = [
-                Document(
-                    page_content=chunk,
-                    metadata={"source": filename, "chunk_id": i}
-                )
-                for i, chunk in enumerate(chunks)
-            ]
-
-            # Create or update vector store
+            documents = [Document(page_content=chunk, metadata={"source": filename, "chunk_id": i}) for i, chunk in enumerate(chunks)]
             if self.vectorstore is None:
-                self.vectorstore = Chroma.from_documents(
-                    documents=documents,
-                    embedding=self.embeddings,
-                    collection_name=f"collection_{self.session_id}"
-                )
+                self.vectorstore = Chroma.from_documents(documents=documents, embedding=self.embeddings, collection_name=f"collection_{self.session_id}")
             else:
                 self.vectorstore.add_documents(documents)
-
             logging.info(f"Successfully processed {len(chunks)} chunks from {filename}")
             return f"Successfully processed {len(chunks)} chunks from {filename}"
         except Exception as e:
@@ -238,27 +206,19 @@ class ChatbotWithMemoryAndRAG:
         """Retrieve relevant context from vector store"""
         if self.vectorstore is None:
             return ""
-
         try:
             docs = self.vectorstore.similarity_search(query, k=k)
-            context = "\n".join([doc.page_content for doc in docs])
-            return context
+            return "\n".join([doc.page_content for doc in docs])
         except Exception as e:
             logging.error(f"Error retrieving context: {e}", exc_info=True)
             return ""
 
     def summarize_text(self, text, max_length=500):
-        """Summarize long text using Juno AI prompts with improved rate limit handling"""
+        """Summarize long text using Juno AI prompts"""
         def _summarize():
-            # MODIFIED: Use configured generative model
             model = genai.GenerativeModel(GENERATIVE_MODEL)
-
-            # Use Juno AI document summarization prompt
             prompt = self.prompts.get_document_summarization_prompt(text, max_length)
-
-            response = model.generate_content(prompt)
-            return response.text
-
+            return model.generate_content(prompt).text
         try:
             return self._retry_with_backoff(_summarize)
         except (ResourceExhausted, GoogleAPIError):
@@ -269,49 +229,21 @@ class ChatbotWithMemoryAndRAG:
             return f"Error summarizing text: {str(e)}"
 
     def generate_response(self, user_message, context=""):
-        """Generate response using Juno AI prompts with improved rate limit handling"""
+        """Generate response using Juno AI prompts"""
         def _generate():
-            # MODIFIED: Use configured generative model
             model = genai.GenerativeModel(GENERATIVE_MODEL)
-
-            # Build conversation context for Juno AI
             conversation_history = []
             if self.chat_history:
-                recent_history = self.chat_history[-3:]  # Last 3 exchanges
-                for exchange in recent_history:
-                    if not exchange.get('fallback', False):  # Skip fallback responses
-                        conversation_history.append({
-                            'user': exchange['user'],
-                            'bot': exchange['bot'],
-                            'timestamp': exchange.get('timestamp', '')
-                        })
-
-            # Use Juno AI conversation prompt with full context
-            prompt = self.prompts.get_conversation_prompt(
-                user_message=user_message,
-                context=context,
-                conversation_history=conversation_history,
-                memory_context=self.memory
-            )
-
-            response = model.generate_content(prompt)
-            return response.text
-
+                for exchange in self.chat_history[-3:]:
+                    if not exchange.get('fallback', False):
+                        conversation_history.append({'user': exchange['user'], 'bot': exchange['bot'], 'timestamp': exchange.get('timestamp', '')})
+            prompt = self.prompts.get_conversation_prompt(user_message=user_message, context=context, conversation_history=conversation_history, memory_context=self.memory)
+            return model.generate_content(prompt).text
         try:
             bot_response = self._retry_with_backoff(_generate)
-
-            # Update chat history
-            self.chat_history.append({
-                "user": user_message,
-                "bot": bot_response,
-                "timestamp": datetime.now().isoformat()
-            })
-
-            # Update memory with important information
+            self.chat_history.append({"user": user_message, "bot": bot_response, "timestamp": datetime.now().isoformat()})
             self.update_memory(user_message, bot_response)
-
             return bot_response
-
         except (ResourceExhausted, GoogleAPIError):
             return self._fallback_response(user_message)
         except Exception as e:
@@ -320,47 +252,23 @@ class ChatbotWithMemoryAndRAG:
 
     def update_memory(self, user_message, bot_response):
         """Update session memory with important information"""
-        current_time = datetime.now().isoformat()
-
-        if "memory" not in self.memory:
-            self.memory["memory"] = []
-
-        self.memory["memory"].append({
-            "user": user_message,
-            "bot": bot_response,
-            "timestamp": current_time
-        })
-
-        # Keep only last 10 interactions in memory
-        if len(self.memory["memory"]) > 10:
-            self.memory["memory"] = self.memory["memory"][-10:]
+        if "memory" not in self.memory: self.memory["memory"] = []
+        self.memory["memory"].append({"user": user_message, "bot": bot_response, "timestamp": datetime.now().isoformat()})
+        if len(self.memory["memory"]) > 10: self.memory["memory"] = self.memory["memory"][-10:]
 
     def scrape_web_content(self, url):
         """Scrape content from a web URL"""
         try:
             logging.info(f"Scraping web content from: {url}")
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
             response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
-
             soup = BeautifulSoup(response.content, 'html.parser')
-
-            # Remove script and style elements
-            for script in soup(["script", "style"]):
-                script.decompose()
-
-            # Get text content
+            for script in soup(["script", "style"]): script.decompose()
             text = soup.get_text()
-
-            # Clean up text
             lines = (line.strip() for line in text.splitlines())
             chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-            text = ' '.join(chunk for chunk in chunks if chunk)
-
-            return text[:10000]  # Limit to 10000 characters
+            return ' '.join(chunk for chunk in chunks if chunk)[:10000]
         except Exception as e:
             logging.error(f"Error scraping URL '{url}': {e}", exc_info=True)
             return f"Error scraping URL: {str(e)}"
@@ -368,15 +276,9 @@ class ChatbotWithMemoryAndRAG:
     def analyze_web_content(self, url, content):
         """Analyze scraped web content using Juno AI prompts"""
         def _analyze():
-            # MODIFIED: Use configured generative model
             model = genai.GenerativeModel(GENERATIVE_MODEL)
-
-            # Use Juno AI web content analysis prompt
             prompt = self.prompts.get_web_content_analysis_prompt(url, content)
-
-            response = model.generate_content(prompt)
-            return response.text
-
+            return model.generate_content(prompt).text
         try:
             return self._retry_with_backoff(_analyze)
         except (ResourceExhausted, GoogleAPIError):
@@ -389,22 +291,10 @@ class ChatbotWithMemoryAndRAG:
     def generate_rag_response(self, user_query, context, sources=None):
         """Generate RAG response using Juno AI prompts"""
         def _generate_rag():
-            # MODIFIED: Use configured generative model
             model = genai.GenerativeModel(GENERATIVE_MODEL)
-
-            # Split context into chunks for better handling
             context_chunks = [context[i:i+2000] for i in range(0, len(context), 2000)]
-
-            # Use Juno AI RAG prompt
-            prompt = self.prompts.get_rag_response_prompt(
-                user_query=user_query,
-                retrieved_chunks=context_chunks[:3],  # Top 3 chunks
-                source_info=sources
-            )
-
-            response = model.generate_content(prompt)
-            return response.text
-
+            prompt = self.prompts.get_rag_response_prompt(user_query=user_query, retrieved_chunks=context_chunks[:3], source_info=sources)
+            return model.generate_content(prompt).text
         try:
             return self._retry_with_backoff(_generate_rag)
         except (ResourceExhausted, GoogleAPIError):
@@ -415,20 +305,9 @@ class ChatbotWithMemoryAndRAG:
 
     def save_conversation(self, conversation_id, title=""):
         """Save current conversation to memory"""
-        if not title:
-            title = f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-
-        conversation_data = {
-            "id": conversation_id,
-            "title": title,
-            "messages": self.chat_history,
-            "created_at": datetime.now().isoformat(),
-            "last_updated": datetime.now().isoformat()
-        }
-
-        if "conversations" not in self.memory:
-            self.memory["conversations"] = {}
-
+        if not title: title = f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        conversation_data = {"id": conversation_id, "title": title, "messages": self.chat_history, "created_at": datetime.now().isoformat(), "last_updated": datetime.now().isoformat()}
+        if "conversations" not in self.memory: self.memory["conversations"] = {}
         self.memory["conversations"][conversation_id] = conversation_data
         logging.info(f"Conversation '{conversation_id}' saved with title '{title}'.")
         return conversation_data
@@ -463,17 +342,11 @@ class ChatbotWithMemoryAndRAG:
         return False
 
     def generate_streaming_response(self, user_message, context=""):
-        """Generate streaming response using Juno AI prompts with improved rate limit handling"""
+        """Generate streaming response using Juno AI prompts"""
         def _generate_stream():
-            # MODIFIED: Use configured generative model
             model = genai.GenerativeModel(GENERATIVE_MODEL)
-
-            # Use Juno AI streaming prompt (optimized for speed)
             prompt = self.prompts.get_streaming_response_prompt(user_message, context)
-
-            response = model.generate_content(prompt, stream=True)
-            return response
-
+            return model.generate_content(prompt, stream=True)
         try:
             return self._retry_with_backoff(_generate_stream, max_retries=3, base_delay=1)
         except (ResourceExhausted, GoogleAPIError):
@@ -532,8 +405,7 @@ def upload_document():
             return jsonify({'error': 'No file selected'}), 400
 
         if file and file.filename.lower().endswith('.pdf'):
-            pdf_content = file.read()
-            text_content = chatbot.extract_text_from_pdf(pdf_content)
+            text_content = chatbot.extract_text_from_pdf(file.read())
 
             if text_content.startswith("Error"):
                 return jsonify({'error': text_content}), 400
@@ -644,9 +516,7 @@ def chat_stream():
                 'streaming': False
             })
 
-        full_response = ""
-        response_chunks = []
-
+        full_response, response_chunks = "", []
         try:
             for chunk in streaming_response:
                 if chunk.text:
@@ -664,13 +534,8 @@ def chat_stream():
                 'streaming': False
             })
 
-        chatbot.chat_history.append({
-            "user": user_message,
-            "bot": full_response,
-            "timestamp": datetime.now().isoformat()
-        })
+        chatbot.chat_history.append({"user": user_message, "bot": full_response, "timestamp": datetime.now().isoformat()})
         chatbot.update_memory(user_message, full_response)
-
         return jsonify({
             'response': full_response,
             'chunks': response_chunks,
@@ -688,13 +553,7 @@ def get_conversations():
         conversations = []
         if "conversations" in chatbot.memory:
             for conv_id, conv_data in chatbot.memory["conversations"].items():
-                conversations.append({
-                    'id': conv_id,
-                    'title': conv_data['title'],
-                    'created_at': conv_data['created_at'],
-                    'last_updated': conv_data['last_updated'],
-                    'message_count': len(conv_data['messages'])
-                })
+                conversations.append({'id': conv_id, 'title': conv_data['title'], 'created_at': conv_data['created_at'], 'last_updated': conv_data['last_updated'], 'message_count': len(conv_data['messages'])})
         conversations.sort(key=lambda x: x['last_updated'], reverse=True)
         return jsonify({'conversations': conversations})
     except Exception as e:
@@ -742,10 +601,8 @@ def rename_conversation(conversation_id):
     try:
         data = request.json
         new_title = data.get('title', '')
-
         if not new_title:
             return jsonify({'error': 'No title provided'}), 400
-
         success = chatbot.rename_conversation(conversation_id, new_title)
         if success:
             return jsonify({'message': 'Conversation renamed successfully'})
@@ -760,16 +617,13 @@ def edit_message(message_index):
     try:
         data = request.json
         new_message = data.get('message', '')
-
         if not new_message:
             return jsonify({'error': 'No message provided'}), 400
-
-        if 0 <= message_index < len(chatbot.chat_history):
+        if 0 <= message_index < len( chatbot.chat_history):
             chatbot.chat_history[message_index]['user'] = new_message
             chatbot.chat_history[message_index]['edited'] = True
             chatbot.chat_history[message_index]['edited_at'] = datetime.now().isoformat()
             chatbot.chat_history = chatbot.chat_history[:message_index + 1]
-
             return jsonify({'message': 'Message edited successfully', 'updated_history': chatbot.chat_history})
         else:
             return jsonify({'error': 'Invalid message index'}), 400
@@ -778,11 +632,8 @@ def edit_message(message_index):
         return jsonify({'error': 'An internal server error occurred.'}), 500
 
 if __name__ == '__main__':
-    print("🚀 Starting Juno AI Server...")
-    print("🤖 Advanced AI Assistant with Document Processing, Web Scraping, and Memory")
-    print("🌟 Powered by Juno AI Prompts System")
-    
-    # Get port from environment variable (Hugging Face Spaces uses PORT env var)
-    port = int(os.environ.get('PORT', 7860))
-    
+    logging.info("🚀 Starting Juno AI Server...")
+    logging.info("🤖 Advanced AI Assistant with Document Processing, Web Scraping, and Memory")
+    logging.info("🌟 Powered by Juno AI Prompts System")
+    port = int(os.environ.get("PORT", 7860))
     app.run(debug=False, host='0.0.0.0', port=port)
