@@ -10,6 +10,18 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
+# Create cache directories with proper permissions
+RUN mkdir -p /code/.cache/huggingface && \
+    mkdir -p /code/.cache/torch && \
+    chmod -R 777 /code/.cache
+
+# Set environment variables for cache directories
+ENV TRANSFORMERS_CACHE=/code/.cache/huggingface
+ENV HF_HOME=/code/.cache/huggingface
+ENV TORCH_HOME=/code/.cache/torch
+ENV HF_HUB_CACHE=/code/.cache/huggingface
+ENV SENTENCE_TRANSFORMERS_HOME=/code/.cache/sentence_transformers
+
 # Copy requirements and install Python dependencies
 COPY ./requirements.txt /code/requirements.txt
 RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
