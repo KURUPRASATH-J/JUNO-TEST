@@ -1,0 +1,17 @@
+python-dotenv
+google-generativeai
+langchain
+langchain-google-genai
+chromadb
+pypdf2
+sentence-transformers
+flask
+flask-cors
+faiss-cpu
+tiktoken
+requests
+beautifulsoup4
+pytesseract
+Pillow
+opencv-python-headless
+pdf2image
