@@ -2,7 +2,7 @@ class ChatbotUI {
     constructor() {
         // Auto-detect API base URL for different deployment environments
         if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-            this.apiBase = 'http://localhost:5000/api';
+            this.apiBase = 'http://localhost:7860/api';
         } else {
             // For Hugging Face Spaces or other deployments, use relative path
             this.apiBase = '/api';
