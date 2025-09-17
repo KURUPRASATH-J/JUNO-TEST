@@ -45,7 +45,7 @@ import pytesseract
 from PIL import Image
 
 # Import Juno AI Prompts System
-from prompts import juno_prompts, get_main_conversation_prompt, get_document_summary_prompt, get_rag_prompt, get_streaming_prompt, get_fallback_responses, get_user_extraction_prompt, get_memory_consolidation_prompt
+from prompts import juno_prompts, get_main_conversation_prompt, get_document_summary_prompt, get_rag_prompt, get_streaming_prompt, get_fallback_responses
 
 # Load environment variables
 load_dotenv()
@@ -101,41 +101,49 @@ class ChatbotWithMemoryAndRAG:
         self.vectorstore = None
         self.chat_history = []
         self.memory = {}
-        # NEWLY ADDED: User information storage for persistent memory
-        self.user_info = {}
+        # NEWLY ADDED: Simple user information storage
+        self.user_name = None
+        self.user_details = {}
         self.session_id = str(uuid.uuid4())
         self.last_rate_limit = None
         self.consecutive_rate_limits = 0
         self.prompts = juno_prompts
-        # NEWLY ADDED: Initialize user info storage
-        self._initialize_user_storage()
         logging.info(f"🤖 Juno AI initialized with session ID: {self.session_id}")
 
-    def _initialize_user_storage(self):
-        """Initialize user information storage structure"""
-        self.user_info = {
-            "name": {
-                "first_name": None,
-                "last_name": None,
-                "full_name": None,
-                "nickname": None
-            },
-            "personal_details": {
-                "age": None,
-                "location": None,
-                "occupation": None,
-                "family": None
-            },
-            "preferences": {
-                "interests": [],
-                "likes": [],
-                "dislikes": []
-            },
-            "goals": [],
-            "context": [],
-            "communication_preferences": None
-        }
-        logging.info("User information storage initialized.")
+    def _extract_name_from_message(self, user_message, bot_response):
+        """Simple name extraction from user messages"""
+        message_lower = user_message.lower()
+
+        # Pattern 1: "i am [name]" or "I'm [name]"
+        patterns = [
+            r"i am ([a-zA-Z]+)",
+            r"i'm ([a-zA-Z]+)", 
+            r"my name is ([a-zA-Z]+)",
+            r"call me ([a-zA-Z]+)",
+            r"name's ([a-zA-Z]+)"
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, message_lower)
+            if match:
+                name = match.group(1).capitalize()
+                self.user_name = name
+                self.user_details["name"] = name
+                logging.info(f"Extracted user name: {name}")
+                return name
+        return None
+
+    def _check_for_name_query(self, user_message):
+        """Check if user is asking about their name"""
+        message_lower = user_message.lower()
+        name_queries = [
+            "what is my name",
+            "what's my name", 
+            "do you know my name",
+            "remember my name",
+            "my name"
+        ]
+        return any(query in message_lower for query in name_queries)
 
     def _retry_with_backoff(self, func, max_retries=5, base_delay=2):
         """Improved retry function with progressive backoff for rate limit handling"""
@@ -182,107 +190,17 @@ class ChatbotWithMemoryAndRAG:
         logging.warning(f"Generating fallback response for message: '{user_message[:50]}...'")
         fallback_templates = get_fallback_responses()
         template = random.choice(fallback_templates)
-        # NEWLY ADDED: Include user name in fallback if available
-        user_name = self._get_user_name()
-        if user_name:
-            response = template.format(user_message_preview=user_message[:50]).replace("Your", f"{user_name}'s")
+
+        # NEWLY ADDED: Include user name in fallback if available  
+        if self.user_name and self._check_for_name_query(user_message):
+            response = f"Your name is {self.user_name}! I remember when you told me."
+        elif self.user_name:
+            response = template.format(user_message_preview=user_message[:50]).replace("Your", f"{self.user_name}'s")
         else:
             response = template.format(user_message_preview=user_message[:50])
+
         self.chat_history.append({"user": user_message, "bot": response, "timestamp": datetime.now().isoformat(), "fallback": True})
         return response
-
-    def _get_user_name(self):
-        """Get the user's preferred name from stored information"""
-        if self.user_info.get("name"):
-            name_info = self.user_info["name"]
-            return (name_info.get("nickname") or 
-                    name_info.get("first_name") or 
-                    name_info.get("full_name") or 
-                    None)
-        return None
-
-    def _extract_user_information(self, user_message, bot_response):
-        """Extract user information from conversation using AI"""
-        def _extract():
-            model = genai.GenerativeModel(GENERATIVE_MODEL)
-            prompt = get_user_extraction_prompt(user_message, bot_response)
-            return model.generate_content(prompt).text
-
-        try:
-            extraction_result = self._retry_with_backoff(_extract, max_retries=3, base_delay=1)
-            # Parse JSON response
-            try:
-                new_user_info = json.loads(extraction_result)
-                if new_user_info and any(new_user_info.values()):
-                    self._consolidate_user_information(new_user_info)
-            except json.JSONDecodeError:
-                logging.warning(f"Failed to parse user information extraction: {extraction_result}")
-        except Exception as e:
-            logging.error(f"Error extracting user information: {e}")
-
-    def _consolidate_user_information(self, new_user_info):
-        """Consolidate new user information with existing information"""
-        def _consolidate():
-            model = genai.GenerativeModel(GENERATIVE_MODEL)
-            prompt = get_memory_consolidation_prompt(self.user_info, new_user_info)
-            return model.generate_content(prompt).text
-
-        try:
-            consolidation_result = self._retry_with_backoff(_consolidate, max_retries=3, base_delay=1)
-            # Parse JSON response and update user_info
-            try:
-                consolidated_info = json.loads(consolidation_result)
-                self.user_info = consolidated_info
-                logging.info("User information updated successfully.")
-            except json.JSONDecodeError:
-                # Manual consolidation as fallback
-                self._manual_consolidation(new_user_info)
-        except Exception as e:
-            logging.error(f"Error consolidating user information: {e}")
-            # Fallback to manual consolidation
-            self._manual_consolidation(new_user_info)
-
-    def _manual_consolidation(self, new_user_info):
-        """Manual consolidation as fallback when AI consolidation fails"""
-        try:
-            # Merge name information
-            if new_user_info.get("name"):
-                for key, value in new_user_info["name"].items():
-                    if value and value != "null":
-                        self.user_info["name"][key] = value
-
-            # Merge personal details
-            if new_user_info.get("personal_details"):
-                for key, value in new_user_info["personal_details"].items():
-                    if value and value != "null":
-                        self.user_info["personal_details"][key] = value
-
-            # Merge preferences (lists)
-            if new_user_info.get("preferences"):
-                for key, values in new_user_info["preferences"].items():
-                    if values:
-                        existing_list = self.user_info["preferences"].get(key, [])
-                        for item in values:
-                            if item not in existing_list:
-                                existing_list.append(item)
-                        self.user_info["preferences"][key] = existing_list
-
-            # Merge goals and context (lists)
-            for key in ["goals", "context"]:
-                if new_user_info.get(key):
-                    existing_list = self.user_info.get(key, [])
-                    for item in new_user_info[key]:
-                        if item not in existing_list:
-                            existing_list.append(item)
-                    self.user_info[key] = existing_list
-
-            # Update communication preferences
-            if new_user_info.get("communication_preferences"):
-                self.user_info["communication_preferences"] = new_user_info["communication_preferences"]
-
-            logging.info("User information manually consolidated.")
-        except Exception as e:
-            logging.error(f"Error in manual consolidation: {e}")
 
     def extract_text_from_pdf(self, pdf_content):
         """Extract text content from PDF bytes with OCR fallback"""
@@ -358,6 +276,17 @@ class ChatbotWithMemoryAndRAG:
 
     def generate_response(self, user_message, context=""):
         """Generate response using Juno AI prompts"""
+        # NEWLY ADDED: Check for name queries first
+        if self._check_for_name_query(user_message):
+            if self.user_name:
+                response = f"Your name is {self.user_name}! I remember when you told me."
+                self.chat_history.append({"user": user_message, "bot": response, "timestamp": datetime.now().isoformat()})
+                return response
+            else:
+                response = "I don't know your name yet. Would you like to tell me what it is?"
+                self.chat_history.append({"user": user_message, "bot": response, "timestamp": datetime.now().isoformat()})
+                return response
+
         def _generate():
             model = genai.GenerativeModel(GENERATIVE_MODEL)
             conversation_history = []
@@ -365,22 +294,22 @@ class ChatbotWithMemoryAndRAG:
                 for exchange in self.chat_history[-3:]:
                     if not exchange.get('fallback', False):
                         conversation_history.append({'user': exchange['user'], 'bot': exchange['bot'], 'timestamp': exchange.get('timestamp', '')})
-            # NEWLY ADDED: Include user information in prompt
-            prompt = self.prompts.get_conversation_prompt(
-                user_message=user_message, 
-                context=context, 
-                conversation_history=conversation_history, 
-                memory_context=self.memory,
-                user_info=self.user_info if any(v for v in self.user_info.values() if v) else None
-            )
+
+            # NEWLY ADDED: Include user name in prompt context
+            user_context = ""
+            if self.user_name:
+                user_context = f"\nUSER NAME: {self.user_name} (remember to address them personally)"
+
+            base_prompt = self.prompts.get_conversation_prompt(user_message=user_message, context=context, conversation_history=conversation_history, memory_context=self.memory)
+            prompt = base_prompt + user_context
             return model.generate_content(prompt).text
 
         try:
             bot_response = self._retry_with_backoff(_generate)
             self.chat_history.append({"user": user_message, "bot": bot_response, "timestamp": datetime.now().isoformat()})
             self.update_memory(user_message, bot_response)
-            # NEWLY ADDED: Extract user information from this conversation
-            self._extract_user_information(user_message, bot_response)
+            # NEWLY ADDED: Extract name from conversation
+            self._extract_name_from_message(user_message, bot_response)
             return bot_response
         except (ResourceExhausted, GoogleAPIError):
             return self._fallback_response(user_message)
@@ -432,22 +361,30 @@ class ChatbotWithMemoryAndRAG:
 
     def generate_rag_response(self, user_query, context, sources=None):
         """Generate RAG response using Juno AI prompts"""
+        # NEWLY ADDED: Check for name queries first
+        if self._check_for_name_query(user_query):
+            if self.user_name:
+                return f"Your name is {self.user_name}! I remember when you told me."
+            else:
+                return "I don't know your name yet. Would you like to tell me what it is?"
+
         def _generate_rag():
             model = genai.GenerativeModel(GENERATIVE_MODEL)
             context_chunks = [context[i:i+2000] for i in range(0, len(context), 2000)]
-            # NEWLY ADDED: Include user information in RAG response
-            prompt = self.prompts.get_rag_response_prompt(
-                user_query=user_query, 
-                retrieved_chunks=context_chunks[:3], 
-                source_info=sources,
-                user_info=self.user_info if any(v for v in self.user_info.values() if v) else None
-            )
+
+            # NEWLY ADDED: Include user name in RAG prompt
+            user_context = ""
+            if self.user_name:
+                user_context = f"\nUSER NAME: {self.user_name} (address them personally)"
+
+            base_prompt = self.prompts.get_rag_response_prompt(user_query=user_query, retrieved_chunks=context_chunks[:3], source_info=sources)
+            prompt = base_prompt + user_context
             return model.generate_content(prompt).text
 
         try:
             response = self._retry_with_backoff(_generate_rag)
-            # NEWLY ADDED: Extract user information from RAG responses too
-            self._extract_user_information(user_query, response)
+            # NEWLY ADDED: Extract name from RAG conversations too
+            self._extract_name_from_message(user_query, response)
             return response
         except (ResourceExhausted, GoogleAPIError):
             return self._fallback_response(user_query)
@@ -497,14 +434,23 @@ class ChatbotWithMemoryAndRAG:
 
     def generate_streaming_response(self, user_message, context=""):
         """Generate streaming response using Juno AI prompts"""
+        # NEWLY ADDED: Check for name queries first
+        if self._check_for_name_query(user_message):
+            if self.user_name:
+                return f"Your name is {self.user_name}! I remember when you told me."
+            else:
+                return "I don't know your name yet. Would you like to tell me what it is?"
+
         def _generate_stream():
             model = genai.GenerativeModel(GENERATIVE_MODEL)
-            # NEWLY ADDED: Include user information in streaming prompts
-            prompt = self.prompts.get_streaming_response_prompt(
-                user_message, 
-                context, 
-                user_info=self.user_info if any(v for v in self.user_info.values() if v) else None
-            )
+
+            # NEWLY ADDED: Include user name in streaming prompt
+            user_context = ""
+            if self.user_name:
+                user_context = f"\nUSER NAME: {self.user_name} (address them personally)"
+
+            base_prompt = self.prompts.get_streaming_response_prompt(user_message, context)
+            prompt = base_prompt + user_context
             return model.generate_content(prompt, stream=True)
 
         try:
@@ -608,7 +554,8 @@ def summarize_document():
 def get_memory():
     return jsonify({
         'memory': chatbot.memory,
-        'user_info': chatbot.user_info,  # NEWLY ADDED: Include user information
+        'user_name': chatbot.user_name,  # NEWLY ADDED: Include user name
+        'user_details': chatbot.user_details,  # NEWLY ADDED: Include user details
         'chat_history_length': len(chatbot.chat_history),
         'has_vectorstore': chatbot.vectorstore is not None,
         'session_id': chatbot.session_id
@@ -695,8 +642,8 @@ def chat_stream():
 
         chatbot.chat_history.append({"user": user_message, "bot": full_response, "timestamp": datetime.now().isoformat()})
         chatbot.update_memory(user_message, full_response)
-        # NEWLY ADDED: Extract user information from streaming responses
-        chatbot._extract_user_information(user_message, full_response)
+        # NEWLY ADDED: Extract name from streaming responses
+        chatbot._extract_name_from_message(user_message, full_response)
 
         return jsonify({
             'response': full_response,
@@ -798,53 +745,10 @@ def edit_message(message_index):
         logging.error(f"Error in /api/messages/{message_index}/edit: {e}", exc_info=True)
         return jsonify({'error': 'An internal server error occurred.'}), 500
 
-# NEWLY ADDED: User information management endpoints
-
-@app.route('/api/user-info', methods=['GET'])
-def get_user_info():
-    """Get stored user information"""
-    try:
-        return jsonify({
-            'user_info': chatbot.user_info,
-            'has_user_info': any(v for v in chatbot.user_info.values() if v),
-            'user_name': chatbot._get_user_name()
-        })
-    except Exception as e:
-        logging.error(f"Error in /api/user-info GET: {e}", exc_info=True)
-        return jsonify({'error': 'An internal server error occurred.'}), 500
-
-@app.route('/api/user-info', methods=['PUT'])
-def update_user_info():
-    """Update user information manually"""
-    try:
-        data = request.json
-        new_info = data.get('user_info', {})
-        if new_info:
-            chatbot._consolidate_user_information(new_info)
-            return jsonify({
-                'message': 'User information updated successfully',
-                'user_info': chatbot.user_info
-            })
-        else:
-            return jsonify({'error': 'No user information provided'}), 400
-    except Exception as e:
-        logging.error(f"Error in /api/user-info PUT: {e}", exc_info=True)
-        return jsonify({'error': 'An internal server error occurred.'}), 500
-
-@app.route('/api/user-info', methods=['DELETE'])
-def clear_user_info():
-    """Clear all stored user information"""
-    try:
-        chatbot._initialize_user_storage()
-        return jsonify({'message': 'User information cleared successfully'})
-    except Exception as e:
-        logging.error(f"Error in /api/user-info DELETE: {e}", exc_info=True)
-        return jsonify({'error': 'An internal server error occurred.'}), 500
-
 if __name__ == '__main__':
     logging.info("🚀 Starting Juno AI Server...")
     logging.info("🤖 Advanced AI Assistant with Document Processing, Web Scraping, and Memory")
     logging.info("🌟 Powered by Juno AI Prompts System")
-    logging.info("🧠 Enhanced with User Information Memory")
+    logging.info("🧠 Enhanced with User Name Memory")
     port = int(os.environ.get("PORT", 7860))
     app.run(debug=False, host='0.0.0.0', port=port)
