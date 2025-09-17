@@ -101,20 +101,19 @@ class ChatbotWithMemoryAndRAG:
         self.vectorstore = None
         self.chat_history = []
         self.memory = {}
-        # NEWLY ADDED: Simple user information storage
+        # NEWLY ADDED: Simple user name storage
         self.user_name = None
-        self.user_details = {}
         self.session_id = str(uuid.uuid4())
         self.last_rate_limit = None
         self.consecutive_rate_limits = 0
         self.prompts = juno_prompts
         logging.info(f"🤖 Juno AI initialized with session ID: {self.session_id}")
 
-    def _extract_name_from_message(self, user_message, bot_response):
+    def extract_name_from_message(self, user_message):
         """Simple name extraction from user messages"""
         message_lower = user_message.lower()
 
-        # Pattern 1: "i am [name]" or "I'm [name]"
+        # Pattern matching for name extraction
         patterns = [
             r"i am ([a-zA-Z]+)",
             r"i'm ([a-zA-Z]+)", 
@@ -128,12 +127,11 @@ class ChatbotWithMemoryAndRAG:
             if match:
                 name = match.group(1).capitalize()
                 self.user_name = name
-                self.user_details["name"] = name
-                logging.info(f"Extracted user name: {name}")
+                logging.info(f"Extracted and stored user name: {name}")
                 return name
         return None
 
-    def _check_for_name_query(self, user_message):
+    def check_for_name_query(self, user_message):
         """Check if user is asking about their name"""
         message_lower = user_message.lower()
         name_queries = [
@@ -190,15 +188,7 @@ class ChatbotWithMemoryAndRAG:
         logging.warning(f"Generating fallback response for message: '{user_message[:50]}...'")
         fallback_templates = get_fallback_responses()
         template = random.choice(fallback_templates)
-
-        # NEWLY ADDED: Include user name in fallback if available  
-        if self.user_name and self._check_for_name_query(user_message):
-            response = f"Your name is {self.user_name}! I remember when you told me."
-        elif self.user_name:
-            response = template.format(user_message_preview=user_message[:50]).replace("Your", f"{self.user_name}'s")
-        else:
-            response = template.format(user_message_preview=user_message[:50])
-
+        response = template.format(user_message_preview=user_message[:50])
         self.chat_history.append({"user": user_message, "bot": response, "timestamp": datetime.now().isoformat(), "fallback": True})
         return response
 
@@ -276,8 +266,11 @@ class ChatbotWithMemoryAndRAG:
 
     def generate_response(self, user_message, context=""):
         """Generate response using Juno AI prompts"""
-        # NEWLY ADDED: Check for name queries first
-        if self._check_for_name_query(user_message):
+        # NEWLY ADDED: Extract name from message first
+        self.extract_name_from_message(user_message)
+
+        # NEWLY ADDED: Handle name queries directly
+        if self.check_for_name_query(user_message):
             if self.user_name:
                 response = f"Your name is {self.user_name}! I remember when you told me."
                 self.chat_history.append({"user": user_message, "bot": response, "timestamp": datetime.now().isoformat()})
@@ -295,21 +288,17 @@ class ChatbotWithMemoryAndRAG:
                     if not exchange.get('fallback', False):
                         conversation_history.append({'user': exchange['user'], 'bot': exchange['bot'], 'timestamp': exchange.get('timestamp', '')})
 
-            # NEWLY ADDED: Include user name in prompt context
-            user_context = ""
-            if self.user_name:
-                user_context = f"\nUSER NAME: {self.user_name} (remember to address them personally)"
-
+            # NEWLY ADDED: Include user name in prompt
             base_prompt = self.prompts.get_conversation_prompt(user_message=user_message, context=context, conversation_history=conversation_history, memory_context=self.memory)
-            prompt = base_prompt + user_context
-            return model.generate_content(prompt).text
+            if self.user_name:
+                base_prompt += f"\n\nIMPORTANT: The user's name is {self.user_name}. Address them personally when appropriate."
+
+            return model.generate_content(base_prompt).text
 
         try:
             bot_response = self._retry_with_backoff(_generate)
             self.chat_history.append({"user": user_message, "bot": bot_response, "timestamp": datetime.now().isoformat()})
             self.update_memory(user_message, bot_response)
-            # NEWLY ADDED: Extract name from conversation
-            self._extract_name_from_message(user_message, bot_response)
             return bot_response
         except (ResourceExhausted, GoogleAPIError):
             return self._fallback_response(user_message)
@@ -361,8 +350,11 @@ class ChatbotWithMemoryAndRAG:
 
     def generate_rag_response(self, user_query, context, sources=None):
         """Generate RAG response using Juno AI prompts"""
-        # NEWLY ADDED: Check for name queries first
-        if self._check_for_name_query(user_query):
+        # NEWLY ADDED: Extract name from query first
+        self.extract_name_from_message(user_query)
+
+        # NEWLY ADDED: Handle name queries directly
+        if self.check_for_name_query(user_query):
             if self.user_name:
                 return f"Your name is {self.user_name}! I remember when you told me."
             else:
@@ -372,20 +364,14 @@ class ChatbotWithMemoryAndRAG:
             model = genai.GenerativeModel(GENERATIVE_MODEL)
             context_chunks = [context[i:i+2000] for i in range(0, len(context), 2000)]
 
-            # NEWLY ADDED: Include user name in RAG prompt
-            user_context = ""
-            if self.user_name:
-                user_context = f"\nUSER NAME: {self.user_name} (address them personally)"
-
             base_prompt = self.prompts.get_rag_response_prompt(user_query=user_query, retrieved_chunks=context_chunks[:3], source_info=sources)
-            prompt = base_prompt + user_context
-            return model.generate_content(prompt).text
+            if self.user_name:
+                base_prompt += f"\n\nIMPORTANT: The user's name is {self.user_name}. Address them personally when appropriate."
+
+            return model.generate_content(base_prompt).text
 
         try:
-            response = self._retry_with_backoff(_generate_rag)
-            # NEWLY ADDED: Extract name from RAG conversations too
-            self._extract_name_from_message(user_query, response)
-            return response
+            return self._retry_with_backoff(_generate_rag)
         except (ResourceExhausted, GoogleAPIError):
             return self._fallback_response(user_query)
         except Exception as e:
@@ -434,8 +420,11 @@ class ChatbotWithMemoryAndRAG:
 
     def generate_streaming_response(self, user_message, context=""):
         """Generate streaming response using Juno AI prompts"""
-        # NEWLY ADDED: Check for name queries first
-        if self._check_for_name_query(user_message):
+        # NEWLY ADDED: Extract name from message first
+        self.extract_name_from_message(user_message)
+
+        # NEWLY ADDED: Handle name queries directly - NO STREAMING for simple responses
+        if self.check_for_name_query(user_message):
             if self.user_name:
                 return f"Your name is {self.user_name}! I remember when you told me."
             else:
@@ -444,14 +433,11 @@ class ChatbotWithMemoryAndRAG:
         def _generate_stream():
             model = genai.GenerativeModel(GENERATIVE_MODEL)
 
-            # NEWLY ADDED: Include user name in streaming prompt
-            user_context = ""
-            if self.user_name:
-                user_context = f"\nUSER NAME: {self.user_name} (address them personally)"
-
             base_prompt = self.prompts.get_streaming_response_prompt(user_message, context)
-            prompt = base_prompt + user_context
-            return model.generate_content(prompt, stream=True)
+            if self.user_name:
+                base_prompt += f"\n\nIMPORTANT: The user's name is {self.user_name}. Address them personally when appropriate."
+
+            return model.generate_content(base_prompt, stream=True)
 
         try:
             return self._retry_with_backoff(_generate_stream, max_retries=3, base_delay=1)
@@ -554,8 +540,7 @@ def summarize_document():
 def get_memory():
     return jsonify({
         'memory': chatbot.memory,
-        'user_name': chatbot.user_name,  # NEWLY ADDED: Include user name
-        'user_details': chatbot.user_details,  # NEWLY ADDED: Include user details
+        'user_name': chatbot.user_name,  # NEWLY ADDED: Show stored user name
         'chat_history_length': len(chatbot.chat_history),
         'has_vectorstore': chatbot.vectorstore is not None,
         'session_id': chatbot.session_id
@@ -607,11 +592,31 @@ def chat_stream():
         if not user_message:
             return jsonify({'error': 'No message provided'}), 400
 
+        # NEWLY ADDED: Handle name queries without streaming to avoid errors
+        if chatbot.check_for_name_query(user_message):
+            chatbot.extract_name_from_message(user_message)
+            if chatbot.user_name:
+                bot_response = f"Your name is {chatbot.user_name}! I remember when you told me."
+            else:
+                bot_response = "I don't know your name yet. Would you like to tell me what it is?"
+
+            chatbot.chat_history.append({"user": user_message, "bot": bot_response, "timestamp": datetime.now().isoformat()})
+
+            return jsonify({
+                'response': bot_response,
+                'has_context': False,
+                'session_id': chatbot.session_id,
+                'streaming': False
+            })
+
         context = chatbot.retrieve_relevant_context(user_message)
         streaming_response = chatbot.generate_streaming_response(user_message, context)
 
-        if streaming_response is None:
-            if context:
+        if streaming_response is None or isinstance(streaming_response, str):
+            # Handle non-streaming response
+            if isinstance(streaming_response, str):
+                bot_response = streaming_response
+            elif context:
                 bot_response = chatbot.generate_rag_response(user_message, context)
             else:
                 bot_response = chatbot.generate_response(user_message, context)
@@ -642,8 +647,6 @@ def chat_stream():
 
         chatbot.chat_history.append({"user": user_message, "bot": full_response, "timestamp": datetime.now().isoformat()})
         chatbot.update_memory(user_message, full_response)
-        # NEWLY ADDED: Extract name from streaming responses
-        chatbot._extract_name_from_message(user_message, full_response)
 
         return jsonify({
             'response': full_response,
@@ -749,6 +752,6 @@ if __name__ == '__main__':
     logging.info("🚀 Starting Juno AI Server...")
     logging.info("🤖 Advanced AI Assistant with Document Processing, Web Scraping, and Memory")
     logging.info("🌟 Powered by Juno AI Prompts System")
-    logging.info("🧠 Enhanced with User Name Memory")
+    logging.info("🧠 Enhanced with Name Memory (Streaming-Safe)")
     port = int(os.environ.get("PORT", 7860))
     app.run(debug=False, host='0.0.0.0', port=port)
