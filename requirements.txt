@@ -18,6 +18,7 @@ pytesseract
 Pillow
 opencv-python-headless
 pdf2image
-pysqlite3-binary
+
 transformers
 torch
+bcrypt

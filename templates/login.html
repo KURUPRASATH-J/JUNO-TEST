@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JUNO AI — Log in</title>
+    <meta name="description" content="Log in or sign up to access JUNO AI — your advanced AI assistant with document processing, web scraping, and smart memory.">
+    <link rel="stylesheet" href="/static/css/login.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="login-page">
+
+    <!-- Animated gradient background -->
+    <div class="login-bg">
+        <div class="orb orb--1"></div>
+        <div class="orb orb--2"></div>
+        <div class="orb orb--3"></div>
+        <div class="orb orb--4"></div>
+    </div>
+
+    <!-- Floating particles -->
+    <canvas class="particles-canvas" id="particlesCanvas"></canvas>
+
+    <!-- ===== Login Card ===== -->
+    <div class="login-card" id="loginCard">
+
+        <!-- Close button -->
+        <button class="login-close" id="loginCloseBtn" title="Close">
+            <i class="fas fa-times"></i>
+        </button>
+
+        <!-- ===== LOGIN VIEW ===== -->
+        <div class="auth-view" id="loginView">
+            <div class="login-header">
+                <h1>Log in or sign up</h1>
+                <p>You'll get smarter responses and can upload files, images, and more.</p>
+            </div>
+
+            <!-- Social login buttons (Coming Soon) -->
+            <div class="login-socials">
+                <button class="btn-social btn-social--google" id="btnGoogle">
+                    <span class="social-icon">
+                        <svg viewBox="0 0 48 48">
+                            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                            <path fill="#FBBC05" d="M10.53 28.59a14.5 14.5 0 0 1 0-9.18l-7.98-6.19a24.0 24.0 0 0 0 0 21.56l7.98-6.19z"/>
+                            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+                        </svg>
+                    </span>
+                    <span>Continue with Google</span>
+                </button>
+
+                <button class="btn-social btn-social--apple" id="btnApple">
+                    <span class="social-icon">
+                        <svg viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/>
+                        </svg>
+                    </span>
+                    <span>Continue with Apple</span>
+                </button>
+
+                <button class="btn-social btn-social--phone" id="btnPhone">
+                    <span class="social-icon">
+                        <i class="fas fa-phone"></i>
+                    </span>
+                    <span>Continue with phone</span>
+                </button>
+            </div>
+
+            <!-- OR divider -->
+            <div class="login-divider">
+                <span>OR</span>
+            </div>
+
+            <!-- Login form -->
+            <form class="login-form" id="loginForm" autocomplete="off" novalidate>
+                <div class="input-group" id="loginEmailGroup">
+                    <input type="email" id="loginEmailInput" placeholder=" " autocomplete="email" required />
+                    <label for="loginEmailInput">Email address</label>
+                    <div class="error-text" id="loginEmailError">Please enter a valid email address</div>
+                </div>
+                <div class="input-group password-group" id="loginPasswordGroup">
+                    <input type="password" id="loginPasswordInput" placeholder=" " autocomplete="current-password" required />
+                    <label for="loginPasswordInput">Password</label>
+                    <button type="button" class="password-toggle" id="loginPwToggle" tabindex="-1">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                    <div class="error-text" id="loginPasswordError">Password is required</div>
+                </div>
+                <button type="submit" class="btn-continue" id="btnLogin">
+                    Continue
+                </button>
+            </form>
+
+            <!-- Toggle to register -->
+            <div class="form-toggle">
+                <p>Don't have an account? <a href="#" id="showRegister">Sign up</a></p>
+            </div>
+        </div>
+
+        <!-- ===== REGISTER VIEW ===== -->
+        <div class="auth-view auth-view--hidden" id="registerView">
+            <div class="login-header">
+                <h1>Create your account</h1>
+                <p>Join JUNO AI and unlock smarter conversations.</p>
+            </div>
+
+            <form class="login-form" id="registerForm" autocomplete="off" novalidate>
+                <div class="input-group" id="regNameGroup">
+                    <input type="text" id="regNameInput" placeholder=" " autocomplete="name" required />
+                    <label for="regNameInput">Full name</label>
+                    <div class="error-text" id="regNameError">Name is required</div>
+                </div>
+                <div class="input-group" id="regEmailGroup">
+                    <input type="email" id="regEmailInput" placeholder=" " autocomplete="email" required />
+                    <label for="regEmailInput">Email address</label>
+                    <div class="error-text" id="regEmailError">Please enter a valid email address</div>
+                </div>
+                <div class="input-group password-group" id="regPasswordGroup">
+                    <input type="password" id="regPasswordInput" placeholder=" " autocomplete="new-password" required minlength="6" />
+                    <label for="regPasswordInput">Password</label>
+                    <button type="button" class="password-toggle" id="regPwToggle" tabindex="-1">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                    <div class="error-text" id="regPasswordError">Minimum 6 characters</div>
+                </div>
+                <div class="input-group password-group" id="regConfirmGroup">
+                    <input type="password" id="regConfirmInput" placeholder=" " autocomplete="new-password" required />
+                    <label for="regConfirmInput">Confirm password</label>
+                    <button type="button" class="password-toggle" id="regConfirmPwToggle" tabindex="-1">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                    <div class="error-text" id="regConfirmError">Passwords do not match</div>
+                </div>
+                <!-- Password strength bar -->
+                <div class="password-strength" id="passwordStrength">
+                    <div class="strength-bar"><div class="strength-fill" id="strengthFill"></div></div>
+                    <span class="strength-label" id="strengthLabel"></span>
+                </div>
+                <button type="submit" class="btn-continue btn-register" id="btnRegister">
+                    Create Account
+                </button>
+            </form>
+
+            <!-- Toggle to login -->
+            <div class="form-toggle">
+                <p>Already have an account? <a href="#" id="showLogin">Log in</a></p>
+            </div>
+        </div>
+
+        <!-- Footer (shared) -->
+        <div class="login-footer">
+            <p>
+                By continuing, you agree to JUNO AI's
+                <a href="#">Terms of Use</a> and
+                <a href="#">Privacy Policy</a>.
+            </p>
+        </div>
+    </div>
+
+    <!-- Transition overlay -->
+    <div class="transition-overlay" id="transitionOverlay">
+        <img src="/static/images/juno-logo.jpg" alt="JUNO AI" class="transition-logo">
+        <div class="transition-text">Welcome to JUNO AI</div>
+        <div class="transition-spinner"></div>
+    </div>
+
+    <!-- Toast notification container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="/static/js/login.js"></script>
+</body>
+</html>

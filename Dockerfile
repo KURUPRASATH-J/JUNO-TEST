@@ -29,14 +29,11 @@ RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
 # Copy application files
 COPY . /code
 
-# Create necessary directories
-RUN mkdir -p /code/static /code/templates
-
 # Expose port
 EXPOSE 7860
 
 # Set environment variable for Hugging Face Spaces
 ENV PYTHONPATH=/code
 
-# Command to run the application
-CMD ["python", "app.py"]
+# Command to run the application from backend/
+CMD ["python", "backend/app.py"]

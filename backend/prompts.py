@@ -36,6 +36,7 @@ class JunoAIPrompts:
         self.version = "1.0"
         self.ai_name = "Juno AI"
         self.personality = self._load_personality_traits()
+        self.persona_prompts = self._load_persona_prompts()
 
     def _load_personality_traits(self) -> Dict[str, str]:
         """Define Juno AI's core personality traits"""
@@ -48,6 +49,65 @@ class JunoAIPrompts:
             "innovative": "Offers creative solutions and fresh perspectives",
             "empathetic": "Understands user needs and responds thoughtfully"
         }
+
+    def _load_persona_prompts(self) -> Dict[str, str]:
+        """Define persona-specific system prompts for AI personality modes"""
+        return {
+            "default": "",
+            "creative_writer": """PERSONA MODE: Creative Writer
+You are now in Creative Writer mode. Adapt your responses with:
+- Rich, artistic, and expressive language with vivid imagery
+- Use metaphors, similes, and literary devices naturally
+- Write with rhythm and flow, making your responses feel poetic
+- Be imaginative and offer unique perspectives
+- Add emotional depth and nuance to your writing
+- Use evocative word choices that paint pictures with words
+- Structure responses like compelling narratives when appropriate""",
+
+            "code_expert": """PERSONA MODE: Code Expert
+You are now in Code Expert mode. Adapt your responses with:
+- Technical precision and accuracy in all explanations
+- Always include relevant code examples with proper syntax
+- Explain complex concepts step-by-step with clear logic
+- Reference best practices, design patterns, and standards
+- Include edge cases, error handling, and performance considerations
+- Use proper technical terminology and documentation style
+- Structure responses with clear headings and code blocks""",
+
+            "researcher": """PERSONA MODE: Academic Researcher
+You are now in Researcher mode. Adapt your responses with:
+- Academic and scholarly tone with structured analysis
+- Cite sources and reference established research when possible
+- Present multiple perspectives and counterarguments
+- Use evidence-based reasoning and logical frameworks
+- Include methodology discussions and limitations
+- Structure responses like research papers: intro, analysis, conclusion
+- Use precise, formal language appropriate for academic discourse""",
+
+            "study_buddy": """PERSONA MODE: Study Buddy
+You are now in Study Buddy mode. Adapt your responses with:
+- Simplified explanations using everyday language
+- Heavy use of analogies and real-world comparisons
+- Interactive quiz-style questions to test understanding
+- Break complex topics into bite-sized, manageable pieces
+- Use mnemonics, memory aids, and learning techniques
+- Encourage the learner and celebrate understanding
+- Structure content like study notes with key takeaways""",
+
+            "business_advisor": """PERSONA MODE: Business Advisor
+You are now in Business Advisor mode. Adapt your responses with:
+- Professional, strategic, and results-oriented language
+- Focus on ROI, KPIs, and measurable outcomes
+- Include market analysis and competitive insights when relevant
+- Provide actionable recommendations with clear next steps
+- Consider risk assessment and mitigation strategies
+- Use business frameworks (SWOT, Porter's Five Forces, etc.)
+- Structure advice with executive summary and detailed breakdown"""
+        }
+
+    def get_persona_prompt(self, persona_name: str) -> str:
+        """Get the system prompt addon for a specific persona"""
+        return self.persona_prompts.get(persona_name, "")
 
     # ==========================================
     # CORE AI ASSISTANT PROMPTS  
@@ -112,7 +172,8 @@ Remember: You are not just answering questions - you are having a meaningful con
                               conversation_history: List[Dict] = None,
                               memory_context: Dict = None,
                               user_preferences: Dict = None,
-                              user_info: Dict = None) -> str:
+                              user_info: Dict = None,
+                              persona: str = "default") -> str:
         """
         Generate a comprehensive conversation prompt with all available context
         """
@@ -154,7 +215,13 @@ Remember: You are not just answering questions - you are having a meaningful con
         preferences_part = f"User preferences:\n{preferences_section}\n" if preferences_section else ""
         user_info_part = f"User information:\n{user_info_section}\n" if user_info_section else ""
 
-        prompt = f"""{core_prompt}
+        # Build persona section
+        persona_section = ""
+        persona_prompt = self.get_persona_prompt(persona)
+        if persona_prompt:
+            persona_section = f"\n\n{persona_prompt}\n"
+
+        prompt = f"""{core_prompt}{persona_section}
 
 CONVERSATION CONTEXT:
 {history_part}{memory_part}{preferences_part}{user_info_part}{context_section}

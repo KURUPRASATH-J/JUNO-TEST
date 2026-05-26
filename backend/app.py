@@ -3,6 +3,13 @@ import logging
 import os
 import sys
 
+# Ensure backend directory is in Python path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Path setup for project structure
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(BASE_DIR)
+
 # ADDED: Fix for sqlite3 compatibility on platforms like Hugging Face Spaces
 # This needs to be at the top before other imports that might use sqlite3
 try:
@@ -53,7 +60,11 @@ load_dotenv()
 # ADDED: Set up proper logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-app = Flask(__name__)
+app = Flask(
+    __name__,
+    static_folder=os.path.join(PROJECT_DIR, 'static'),
+    template_folder=os.path.join(PROJECT_DIR, 'templates')
+)
 CORS(app)
 
 # --- Configuration ---
@@ -107,6 +118,7 @@ class ChatbotWithMemoryAndRAG:
         self.last_rate_limit = None
         self.consecutive_rate_limits = 0
         self.prompts = juno_prompts
+        self.active_persona = 'default'
         logging.info(f"🤖 Juno AI initialized with session ID: {self.session_id}")
 
     def extract_name_from_message(self, user_message):
@@ -289,7 +301,7 @@ class ChatbotWithMemoryAndRAG:
                         conversation_history.append({'user': exchange['user'], 'bot': exchange['bot'], 'timestamp': exchange.get('timestamp', '')})
 
             # NEWLY ADDED: Include user name in prompt
-            base_prompt = self.prompts.get_conversation_prompt(user_message=user_message, context=context, conversation_history=conversation_history, memory_context=self.memory)
+            base_prompt = self.prompts.get_conversation_prompt(user_message=user_message, context=context, conversation_history=conversation_history, memory_context=self.memory, persona=self.active_persona)
             if self.user_name:
                 base_prompt += f"\n\nIMPORTANT: The user's name is {self.user_name}. Address them personally when appropriate."
 
@@ -434,6 +446,10 @@ class ChatbotWithMemoryAndRAG:
             model = genai.GenerativeModel(GENERATIVE_MODEL)
 
             base_prompt = self.prompts.get_streaming_response_prompt(user_message, context)
+            # Add persona instructions
+            persona_prompt = self.prompts.get_persona_prompt(self.active_persona)
+            if persona_prompt:
+                base_prompt = persona_prompt + "\n\n" + base_prompt
             if self.user_name:
                 base_prompt += f"\n\nIMPORTANT: The user's name is {self.user_name}. Address them personally when appropriate."
 
@@ -451,13 +467,20 @@ class ChatbotWithMemoryAndRAG:
 # Initialize Juno AI chatbot
 chatbot = ChatbotWithMemoryAndRAG()
 
-@app.route('/')
-def serve_frontend():
-    return send_from_directory('.', 'index.html')
+# --- Auth: import and register blueprint ---
+from auth import auth_bp, init_db
+app.register_blueprint(auth_bp)
+init_db()
 
-@app.route('/<path:filename>')
-def serve_static(filename):
-    return send_from_directory('.', filename)
+@app.route('/')
+def serve_login():
+    """Serve the login page as the entry point"""
+    return send_from_directory(app.template_folder, 'login.html')
+
+@app.route('/chat')
+def serve_chatbot():
+    """Serve the chatbot page for authenticated users"""
+    return send_from_directory(app.template_folder, 'index.html')
 
 # --- API Endpoints ---
 
@@ -748,10 +771,35 @@ def edit_message(message_index):
         logging.error(f"Error in /api/messages/{message_index}/edit: {e}", exc_info=True)
         return jsonify({'error': 'An internal server error occurred.'}), 500
 
+@app.route('/api/persona', methods=['GET'])
+def get_persona():
+    """Get current active persona and list of available personas"""
+    persona_list = list(chatbot.prompts.persona_prompts.keys())
+    return jsonify({
+        'active_persona': chatbot.active_persona,
+        'personas': persona_list
+    })
+
+@app.route('/api/persona', methods=['PUT'])
+def set_persona():
+    """Set the active AI persona"""
+    try:
+        data = request.json
+        persona = data.get('persona', 'default')
+        if persona not in chatbot.prompts.persona_prompts:
+            return jsonify({'error': f'Unknown persona: {persona}'}), 400
+        chatbot.active_persona = persona
+        logging.info(f"Persona changed to: {persona}")
+        return jsonify({'message': f'Persona set to {persona}', 'active_persona': persona})
+    except Exception as e:
+        logging.error(f"Error setting persona: {e}", exc_info=True)
+        return jsonify({'error': 'An internal server error occurred.'}), 500
+
 if __name__ == '__main__':
     logging.info("🚀 Starting Juno AI Server...")
     logging.info("🤖 Advanced AI Assistant with Document Processing, Web Scraping, and Memory")
     logging.info("🌟 Powered by Juno AI Prompts System")
     logging.info("🧠 Enhanced with Name Memory (Streaming-Safe)")
+    logging.info("🎭 AI Persona System Active")
     port = int(os.environ.get("PORT", 7860))
     app.run(debug=False, host='0.0.0.0', port=port)
